@@ -1,0 +1,11 @@
+node_modules
+dist
+.github
+.git
+.env*
+docker-compose.yml
+*.md
+.eslint*
+.docker
+data
+logs

@@ -1,0 +1,171 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  namespace: teafiles
+  name: teafiles-service-ingress
+spec:
+  rules:
+    - host: localhost
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: teafiles-service
+                port:
+                  number: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: teafiles
+  name: teafiles-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: teafiles-service
+  ports:
+    - name: http
+      protocol: TCP
+      port: 80
+      targetPort: 3005
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: teafiles
+  name: teafiles-service-deployment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: teafiles-service
+  template:
+    metadata:
+      labels:
+        app: teafiles-service
+    spec:
+      initContainers:
+        - name: init-rsync
+          image: alpine:latest
+          command: ["sh", "-c"]
+          args:
+            - cp /etc/rsync-config/rsync-key /etc/rsync-key && chmod 600 /etc/rsync-key && apk update && apk add rsync openssh-client openssh && rsync -avzr -e "ssh -p $(cat /etc/rsync-config/remote-port) -i /etc/rsync-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" $(cat /etc/rsync-config/remote-server):/tmp/teafiles_bak /app-volume
+          volumeMounts:
+            - name: app-volume
+              mountPath: /app-volume
+            - name: rsync-config-volume
+              mountPath: /etc/rsync-config
+      containers:
+        - name: teafiles-service
+          image: teafiles/teafiles-service:latest
+          imagePullPolicy: Never
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "500m"
+          ports:
+            - containerPort: 3005
+          envFrom:
+            - configMapRef:
+                name: teafiles-service-config
+          volumeMounts:
+            - name: app-volume
+              mountPath: /app-volume
+      volumes:
+        - name: app-volume
+          persistentVolumeClaim:
+            claimName: teafiles-service-pvc
+        - name: rsync-config-volume
+          secret:
+            secretName: rsync-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: teafiles
+  name: teafiles-service-config
+data:
+  PORT: "3005"
+  ROOT_PATH_TEA: "/app-volume"
+  REDIS_DB: ""
+  MONGODB_URI: ""
+  REDIS_URL: ""
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  namespace: teafiles
+  name: teafiles-service-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  namespace: teafiles
+  name: rsync-backup
+spec:
+  schedule: "*/10 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: rsync-container
+              image: alpine:latest
+              command: ["sh", "-c"]
+              args:
+                - cp /etc/rsync-config/rsync-key /etc/rsync-key && chmod 600 /etc/rsync-key && apk update && apk add rsync openssh-client openssh && rsync -avzr -e "ssh -p $(cat /etc/rsync-config/remote-port) -i /etc/rsync-key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" $(cat /etc/rsync-config/remote-server):/tmp/teafiles_bak /app-volume
+              volumeMounts:
+                - name: app-volume
+                  mountPath: /app-volume
+                - name: rsync-config-volume
+                  mountPath: /etc/rsync-config
+          volumes:
+            - name: app-volume
+              persistentVolumeClaim:
+                claimName: teafiles-service-pvc
+            - name: rsync-config-volume
+              secret:
+                secretName: rsync-config
+          restartPolicy: OnFailure
+---
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler
+metadata:
+  name: teafiles-autoscaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: teafiles-service
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+# ---
+# apiVersion: keda.sh/v1alpha1
+# kind: ScaledObject
+# metadata:
+#   namespace: teafiles
+#   name: memory-scaledobject
+# spec:
+#   scaleTargetRef:
+#     name: teafiles-service-deployment
+#   triggers:
+#     - type: memory
+#       metricType: Utilization # Allowed types are 'Utilization' or 'AverageValue'
+#       metadata:
+#         value: "100"
+#         containerName: "teafiles-service"
+#     - type: cpu
+#       metricType: Utilization # Allowed types are 'Utilization' or 'AverageValue'
+#       metadata:
+#         type: Utilization # Deprecated in favor of trigger.metricType; allowed types are 'Utilization' or 'AverageValue'
+#         value: "250"
+#         containerName: "teafiles-service" # Optional. You can use this to target a specific container in a pod

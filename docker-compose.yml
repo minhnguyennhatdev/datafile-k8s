@@ -1,0 +1,17 @@
+version: "3.8"
+services:
+  teafiles-service:
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    platform: linux/amd64
+    image: nami/teafiles-service
+    container_name: teafiles-service
+    restart: unless-stopped
+    ports:
+      - $PORT:$PORT
+    env_file:
+      - ./.env
+    volumes:
+      - ./index.js:/app/index.js
+    # - ./:/app
